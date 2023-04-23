@@ -46,7 +46,7 @@ impl<'a, 'db, 'tx> InscriptionUpdater<'a, 'db, 'tx> {
       .iter()?
       .flatten()
       .rev()
-      .map(|(number, _id)| number.value() - 100)
+      .map(|(number, _id)| number.value() + 1)
       .next()
       .unwrap_or(0i64);
 
@@ -109,14 +109,26 @@ impl<'a, 'db, 'tx> InscriptionUpdater<'a, 'db, 'tx> {
       }
     }
 
-    if inscriptions.iter().all(|flotsam| flotsam.offset != 0)
-      && Inscription::from_transaction(tx).is_some()
-    {
-      inscriptions.push(Flotsam {
-        inscription_id: txid.into(),
-        offset: 0,
-        origin: Origin::New(input_value - tx.output.iter().map(|txout| txout.value).sum::<u64>()),
-      });
+    if inscriptions.iter().all(|flotsam| flotsam.offset != 0) {
+      let v = Inscription::from_transaction_vec(tx);
+      for (i, maybe_inscription) in v.iter().enumerate() {
+        if maybe_inscription.is_none() {
+          continue;
+        }
+        if i == 0 {
+          // TODO except for the first inscription on this chain
+          continue;
+        }
+
+        inscriptions.push(Flotsam {
+          inscription_id: InscriptionId {
+            txid: txid.clone(),
+            index: i as u32,
+          },
+          offset: 0,
+          origin: Origin::New(input_value - tx.output.iter().map(|txout| txout.value).sum::<u64>()),
+        });
+      }
     };
 
     let is_coinbase = tx
