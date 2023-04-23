@@ -13,7 +13,7 @@ use {
   chrono::SubsecRound,
   indicatif::{ProgressBar, ProgressStyle},
   log::log_enabled,
-  redb::{Database, ReadableTable, Table, TableDefinition, WriteStrategy, WriteTransaction},
+  redb::{Database, ReadableTable, Table, TableDefinition, WriteTransaction},
   std::collections::HashMap,
   std::sync::atomic::{self, AtomicBool},
 };
@@ -157,7 +157,7 @@ impl Index {
       data_dir.join("index.redb")
     };
 
-    let database = match unsafe { Database::builder().open_mmapped(&path) } {
+    let database = match Database::builder().open(&path) {
       Ok(database) => {
         let schema_version = database
           .begin_read()?
@@ -184,15 +184,7 @@ impl Index {
         database
       }
       Err(redb::Error::Io(error)) if error.kind() == io::ErrorKind::NotFound => {
-        let database = unsafe {
-          Database::builder()
-            .set_write_strategy(if cfg!(test) {
-              WriteStrategy::Checksum
-            } else {
-              WriteStrategy::TwoPhase
-            })
-            .create_mmapped(&path)?
-        };
+        let database = Database::builder().create(&path)?;
         let tx = database.begin_write()?;
 
         #[cfg(test)]
@@ -338,6 +330,7 @@ impl Index {
         blocks_indexed: wtx
           .open_table(HEIGHT_TO_BLOCK_HASH)?
           .range(0..)?
+          .flatten()
           .rev()
           .next()
           .map(|(height, _hash)| height.value() + 1)
@@ -354,6 +347,7 @@ impl Index {
         transactions: wtx
           .open_table(WRITE_TRANSACTION_STARTING_BLOCK_COUNT_TO_TIMESTAMP)?
           .range(0..)?
+          .flatten()
           .map(
             |(starting_block_count, starting_timestamp)| TransactionInfo {
               starting_block_count: starting_block_count.value(),
@@ -433,7 +427,12 @@ impl Index {
 
     let height_to_block_hash = rtx.0.open_table(HEIGHT_TO_BLOCK_HASH)?;
 
-    for next in height_to_block_hash.range(0..block_count)?.rev().take(take) {
+    for next in height_to_block_hash
+      .range(0..block_count)?
+      .flatten()
+      .rev()
+      .take(take)
+    {
       blocks.push((next.0.value(), Entry::load(*next.1.value())));
     }
 
@@ -448,7 +447,7 @@ impl Index {
 
       let sat_to_satpoint = rtx.open_table(SAT_TO_SATPOINT)?;
 
-      for (sat, satpoint) in sat_to_satpoint.range(0..)? {
+      for (sat, satpoint) in sat_to_satpoint.range(0..)?.flatten() {
         result.push((Sat(sat.value()), Entry::load(*satpoint.value())));
       }
 
@@ -619,7 +618,10 @@ impl Index {
 
     let outpoint_to_sat_ranges = rtx.0.open_table(OUTPOINT_TO_SAT_RANGES)?;
 
-    for (key, value) in outpoint_to_sat_ranges.range::<&[u8; 36]>(&[0; 36]..)? {
+    for (key, value) in outpoint_to_sat_ranges
+      .range::<&[u8; 36]>(&[0; 36]..)?
+      .flatten()
+    {
       let mut offset = 0;
       for chunk in value.value().chunks_exact(11) {
         let (start, end) = SatRange::load(chunk.try_into().unwrap());
@@ -682,6 +684,7 @@ impl Index {
         let current = tx
           .open_table(HEIGHT_TO_BLOCK_HASH)?
           .range(0..)?
+          .flatten()
           .rev()
           .next()
           .map(|(height, _hash)| height)
@@ -714,6 +717,7 @@ impl Index {
         .begin_read()?
         .open_table(SATPOINT_TO_INSCRIPTION_ID)?
         .range::<&[u8; 44]>(&[0; 44]..)?
+        .flatten()
         .map(|(satpoint, id)| (Entry::load(*satpoint.value()), Entry::load(*id.value())))
         .take(n.unwrap_or(usize::MAX))
         .collect(),
@@ -727,6 +731,7 @@ impl Index {
         .begin_read()?
         .open_table(INSCRIPTION_NUMBER_TO_INSCRIPTION_ID)?
         .iter()?
+        .flatten()
         .rev()
         .take(8)
         .map(|(_number, id)| Entry::load(*id.value()))
@@ -744,10 +749,17 @@ impl Index {
     let inscription_number_to_inscription_id =
       rtx.open_table(INSCRIPTION_NUMBER_TO_INSCRIPTION_ID)?;
 
-    let latest = match inscription_number_to_inscription_id.iter()?.rev().next() {
-      Some((number, _id)) => number.value(),
-      None => return Ok(Default::default()),
-    };
+    let latest = 0;
+    // let latest = inscription_number_to_inscription_id.iter()?.rev().next();
+
+    // let lastest = match latest {
+    //   Some((number, _id)) => number.value(),
+    //   Some(Err(_)) | None => return Ok(Default::default()),
+    // };
+    //let latest = Ok(Default::default());
+    if true {
+      return Ok(Default::default());
+    }
 
     let from = from.unwrap_or(latest);
 
@@ -774,6 +786,7 @@ impl Index {
       .range(..=from)?
       .rev()
       .take(n)
+      .flatten()
       .map(|(_number, id)| Entry::load(*id.value()))
       .collect();
 
@@ -787,6 +800,7 @@ impl Index {
         .begin_read()?
         .open_table(INSCRIPTION_NUMBER_TO_INSCRIPTION_ID)?
         .iter()?
+        .flatten()
         .rev()
         .take(n)
         .map(|(number, id)| (number.value(), Entry::load(*id.value())))
@@ -896,6 +910,7 @@ impl Index {
     Ok(
       satpoint_to_id
         .range::<&[u8; 44]>(&start..=&end)?
+        .flatten()
         .map(|(satpoint, id)| (Entry::load(*satpoint.value()), Entry::load(*id.value()))),
     )
   }
