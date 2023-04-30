@@ -763,17 +763,17 @@ mod tests {
   fn hidden_inscriptions_are_found() {
     let tx = Transaction {
       version: 0,
-      lock_time: bitcoin::locktime::LockTime::from_height(0).unwrap(),
+      lock_time: bitcoin::locktime::PackedLockTime(0),
       input: vec![
         TxIn {
           previous_output: OutPoint::null(),
-          script_sig: ScriptBuf::new(),
+          script_sig: Script::new(),
           sequence: Sequence(0),
           witness: Witness::new(),
         },
         TxIn {
           previous_output: OutPoint::null(),
-          script_sig: ScriptBuf::new(),
+          script_sig: Script::new(),
           sequence: Sequence(0),
           witness: inscription("foo", [1; 1040]).to_witness(),
         },
