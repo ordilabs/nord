@@ -48,6 +48,8 @@ pub(crate) struct Inscribe {
   pub(crate) no_limit: bool,
   #[clap(long, help = "Don't sign or broadcast transactions.")]
   pub(crate) dry_run: bool,
+  #[clap(long, help = "Use voodoo powers to inscribe under moonlight.")]
+  pub(crate) nocturnal: bool,
   #[clap(long, help = "Send inscription to <DESTINATION>.")]
   pub(crate) destination: Option<Address>,
 }
@@ -67,6 +69,30 @@ impl Inscribe {
 
     let commit_tx_change = [get_change_address(&client)?, get_change_address(&client)?];
 
+    // TODO: cursed may not be able to be sent out to destination
+
+    /*
+     Overview
+
+    1. Gather wallet UTXOs
+    2. create dummy reveal tx
+    3. calculate fee requirement for dummy reveal
+    4. utx_commit
+    - output[0]: itxo_commit, 10K + reveal_fee
+    - output[1]: voodoo, 10K
+    - output[2]: change
+    - fee: commit_fee
+    3. utx_reveal
+    - input[0]: voodoo, 10K
+    - input[1]: <(itxo_commit, 10K + reveal_fee)
+    - output[0]: voodoo_change 10K
+    - output[1]: itxo_genesis, 10K
+    - fee: reveal_fee
+    4. sign(utx_commit), sign(utx_reveal)
+    5. dry-run / broadcast
+
+    */
+
     let reveal_tx_destination = self
       .destination
       .map(Ok)
@@ -84,17 +110,38 @@ impl Inscribe {
         self.commit_fee_rate.unwrap_or(self.fee_rate),
         self.fee_rate,
         self.no_limit,
+        self.nocturnal,
       )?;
 
-    utxos.insert(
-      reveal_tx.input[0].previous_output,
-      Amount::from_sat(
-        unsigned_commit_tx.output[reveal_tx.input[0].previous_output.vout as usize].value,
-      ),
-    );
+    if self.nocturnal {
+      utxos.insert(
+        reveal_tx.input[0].previous_output,
+        TransactionBuilder::TARGET_POSTAGE,
+      );
 
-    let fees =
-      Self::calculate_fee(&unsigned_commit_tx, &utxos) + Self::calculate_fee(&reveal_tx, &utxos);
+      utxos.insert(
+        reveal_tx.input[1].previous_output,
+        Amount::from_sat(
+          unsigned_commit_tx.output[reveal_tx.input[0].previous_output.vout as usize].value,
+        ),
+      );
+      {
+        //let utxos_after = utxos.clone();
+        //dbg!(utxos_after);
+      }
+    } else {
+      utxos.insert(
+        reveal_tx.input[0].previous_output,
+        Amount::from_sat(
+          unsigned_commit_tx.output[reveal_tx.input[0].previous_output.vout as usize].value,
+        ),
+      );
+    }
+
+    let fees_commit = Self::calculate_fee(&unsigned_commit_tx, &utxos);
+    let fees_reveal = Self::calculate_fee(&reveal_tx, &utxos);
+    let _fees = fees_commit + fees_reveal;
+    let fees = 0;
 
     if self.dry_run {
       print_json(Output {
@@ -103,6 +150,59 @@ impl Inscribe {
         inscription: reveal_tx.txid().into(),
         fees,
       })?;
+
+      let signed_raw_commit_tx = client
+        .sign_raw_transaction_with_wallet(&unsigned_commit_tx, None, None)?
+        .hex;
+
+      let unsigned_commit_tx_inputs: Vec<(usize, OutPoint, Amount)> = unsigned_commit_tx
+        .clone()
+        .input
+        .iter()
+        .enumerate()
+        .map(|(n, i)| {
+          (
+            n,
+            i.previous_output,
+            utxos.get(&i.previous_output).unwrap().clone(),
+          )
+        })
+        .collect();
+
+      let reveal_tx_inputs: Vec<(usize, OutPoint, Amount)> = reveal_tx
+        .clone()
+        .input
+        .iter()
+        .enumerate()
+        .map(|(n, i)| {
+          (
+            n,
+            i.previous_output,
+            utxos.get(&i.previous_output).unwrap().clone(),
+          )
+        })
+        .collect();
+
+      dbg!("FINALIZE");
+
+      dbg!(
+        &unsigned_commit_tx.txid(),
+        &unsigned_commit_tx.output,
+        &unsigned_commit_tx_inputs,
+      );
+
+      dbg!(&reveal_tx.txid(), &reveal_tx.output, &reveal_tx_inputs,);
+
+      let reveal_raw_tx = bitcoin::consensus::serialize(&reveal_tx);
+
+      let test_mempool_accept = client.test_mempool_accept(&[&signed_raw_commit_tx])?;
+      dbg!(&test_mempool_accept);
+      let test_mempool_accept =
+        client.test_mempool_accept(&[&signed_raw_commit_tx, &reveal_raw_tx])?;
+      dbg!(&test_mempool_accept);
+
+      //dbg!(&unsigned_commit_tx);
+      //dbg!(&reveal_tx);
     } else {
       if !self.no_backup {
         Inscribe::backup_recovery_key(&client, recovery_key_pair, options.chain().network())?;
@@ -134,10 +234,30 @@ impl Inscribe {
   fn calculate_fee(tx: &Transaction, utxos: &BTreeMap<OutPoint, Amount>) -> u64 {
     tx.input
       .iter()
-      .map(|txin| utxos.get(&txin.previous_output).unwrap().to_sat())
+      .map(|txin| {
+        let prev = &txin.previous_output;
+        let value = utxos
+          .get(prev)
+          .expect("All spent inputs should be found in the internal utxo set");
+        //dbg!(txin.previous_output, value);
+        value.to_sat()
+        // utxos
+        //   .get(&txin.previous_output)c
+        //   .expect("All spent inputs should be found in the internal utxo set")
+        //   .to_sat()
+      })
       .sum::<u64>()
-      .checked_sub(tx.output.iter().map(|txout| txout.value).sum::<u64>())
-      .unwrap()
+      .checked_sub(
+        tx.output
+          .iter()
+          .map(|txout| {
+            //dbg!(txout.value);
+
+            txout.value
+          })
+          .sum::<u64>(),
+      )
+      .expect("Transaction input value is less than output value")
   }
 
   fn create_inscription_transactions(
@@ -151,6 +271,7 @@ impl Inscribe {
     commit_fee_rate: FeeRate,
     reveal_fee_rate: FeeRate,
     no_limit: bool,
+    nocturnal: bool,
   ) -> Result<(Transaction, Transaction, TweakedKeyPair)> {
     let satpoint = if let Some(satpoint) = satpoint {
       satpoint
@@ -184,8 +305,15 @@ impl Inscribe {
     }
 
     let secp256k1 = Secp256k1::new();
-    let key_pair = UntweakedKeyPair::new(&secp256k1, &mut rand::thread_rng());
+    use rand::SeedableRng;
+    let seed = [1u8; 32];
+    let mut seeded_rng = secp256k1::rand::rngs::StdRng::from_seed(seed);
+    let key_pair = UntweakedKeyPair::new(&secp256k1, &mut seeded_rng);
+
     let (public_key, _parity) = XOnlyPublicKey::from_keypair(&key_pair);
+
+    let virgin_keypair = key_pair.tap_tweak(&secp256k1, None);
+    let (_virgin_public, _parity) = XOnlyPublicKey::from_keypair(&virgin_keypair.to_inner());
 
     let reveal_script = inscription.append_reveal_script(
       script::Builder::new()
@@ -203,18 +331,62 @@ impl Inscribe {
       .control_block(&(reveal_script.clone(), LeafVersion::TapScript))
       .expect("should compute control block");
 
+    let voodoo_address = Address::p2tr(&secp256k1, public_key, None, network);
     let commit_tx_address = Address::p2tr_tweaked(taproot_spend_info.output_key(), network);
+    let (virgin_xopk, _parity) = virgin_keypair.to_inner().x_only_public_key();
 
-    let (_, reveal_fee) = Self::build_reveal_transaction(
-      &control_block,
-      reveal_fee_rate,
-      OutPoint::null(),
-      TxOut {
-        script_pubkey: destination.script_pubkey(),
-        value: 0,
-      },
-      &reveal_script,
+    let virgin_address = Address::p2tr_tweaked(
+      TweakedPublicKey::dangerous_assume_tweaked(virgin_xopk),
+      network,
     );
+    dbg!(assert_eq!(voodoo_address, virgin_address));
+    dbg!(&voodoo_address);
+    dbg!(&virgin_address);
+    dbg!(&commit_tx_address);
+
+    let voodoo_change_address = change[1].clone();
+
+    let (_, reveal_fee) = if nocturnal {
+      Self::build_nocturnal_reveal_transaction(
+        &control_block,
+        reveal_fee_rate,
+        OutPoint::null(),
+        OutPoint::null(),
+        TxOut {
+          script_pubkey: voodoo_change_address.clone().script_pubkey(),
+          value: 0,
+        },
+        TxOut {
+          script_pubkey: destination.script_pubkey(),
+          value: 0,
+        },
+        &reveal_script,
+      )
+    } else {
+      Self::build_reveal_transaction(
+        &control_block,
+        reveal_fee_rate,
+        OutPoint::null(),
+        TxOut {
+          script_pubkey: destination.script_pubkey(),
+          value: 0,
+        },
+        &reveal_script,
+      )
+    };
+
+    let commit_fee_rate = if !nocturnal {
+      commit_fee_rate
+    } else {
+      FeeRate::try_from(10.).unwrap()
+    };
+
+    let output_value = if nocturnal {
+      // larger than needed to cover the
+      reveal_fee + TransactionBuilder::TARGET_POSTAGE + TransactionBuilder::TARGET_POSTAGE
+    } else {
+      reveal_fee + TransactionBuilder::TARGET_POSTAGE
+    };
 
     let unsigned_commit_tx = TransactionBuilder::build_transaction_with_value(
       satpoint,
@@ -223,62 +395,171 @@ impl Inscribe {
       commit_tx_address.clone(),
       change,
       commit_fee_rate,
-      reveal_fee + TransactionBuilder::TARGET_POSTAGE,
+      output_value,
     )?;
 
-    let (vout, output) = unsigned_commit_tx
-      .output
-      .iter()
-      .enumerate()
-      .find(|(_vout, output)| output.script_pubkey == commit_tx_address.script_pubkey())
-      .expect("should find sat commit/inscription output");
+    let (unsigned_commit_tx, reveal_tx) = if !nocturnal {
+      let (vout, output) = unsigned_commit_tx
+        .output
+        .iter()
+        .enumerate()
+        .find(|(_vout, output)| output.script_pubkey == commit_tx_address.script_pubkey())
+        .expect("should find sat commit/inscription output");
 
-    let (mut reveal_tx, fee) = Self::build_reveal_transaction(
-      &control_block,
-      reveal_fee_rate,
-      OutPoint {
-        txid: unsigned_commit_tx.txid(),
-        vout: vout.try_into().unwrap(),
-      },
-      TxOut {
-        script_pubkey: destination.script_pubkey(),
-        value: output.value,
-      },
-      &reveal_script,
-    );
+      let (mut reveal_tx, fee) = Self::build_reveal_transaction(
+        &control_block,
+        reveal_fee_rate,
+        OutPoint {
+          txid: unsigned_commit_tx.txid(),
+          vout: vout.try_into().unwrap(),
+        },
+        TxOut {
+          script_pubkey: destination.script_pubkey(),
+          value: output.value,
+        },
+        &reveal_script,
+      );
 
-    reveal_tx.output[0].value = reveal_tx.output[0]
-      .value
-      .checked_sub(fee.to_sat())
-      .context("commit transaction output value insufficient to pay transaction fee")?;
+      reveal_tx.output[0].value = reveal_tx.output[0]
+        .value
+        .checked_sub(fee.to_sat())
+        .context("commit transaction output value insufficient to pay transaction fee")?;
 
-    if reveal_tx.output[0].value < reveal_tx.output[0].script_pubkey.dust_value().to_sat() {
-      bail!("commit transaction output would be dust");
-    }
+      if reveal_tx.output[0].value < reveal_tx.output[0].script_pubkey.dust_value().to_sat() {
+        bail!("commit transaction output would be dust");
+      }
 
-    let mut sighash_cache = SighashCache::new(&mut reveal_tx);
+      let mut sighash_cache = SighashCache::new(&mut reveal_tx);
+      let signature_hash = sighash_cache
+        .taproot_script_spend_signature_hash(
+          0,
+          &Prevouts::All(&[output]),
+          TapLeafHash::from_script(&reveal_script, LeafVersion::TapScript),
+          SchnorrSighashType::Default,
+        )
+        .expect("signature hash should compute");
 
-    let signature_hash = sighash_cache
-      .taproot_script_spend_signature_hash(
-        0,
-        &Prevouts::All(&[output]),
-        TapLeafHash::from_script(&reveal_script, LeafVersion::TapScript),
-        SchnorrSighashType::Default,
-      )
-      .expect("signature hash should compute");
+      let signature = secp256k1.sign_schnorr(&signature_hash.into(), &key_pair);
 
-    let signature = secp256k1.sign_schnorr(
-      &secp256k1::Message::from_slice(signature_hash.as_inner())
-        .expect("should be cryptographically secure hash"),
-      &key_pair,
-    );
+      let witness = sighash_cache
+        .witness_mut(0)
+        .expect("getting mutable witness reference should work");
+      witness.push(signature.as_ref());
+      witness.push(reveal_script);
+      witness.push(&control_block.serialize());
 
-    let witness = sighash_cache
-      .witness_mut(0)
-      .expect("getting mutable witness reference should work");
-    witness.push(signature.as_ref());
-    witness.push(reveal_script);
-    witness.push(&control_block.serialize());
+      (unsigned_commit_tx, reveal_tx)
+    } else {
+      //let fee = Amount::from_sat(2000);
+      let mut unsigned_commit_tx = unsigned_commit_tx;
+      // region: --- vodoo spell
+
+      // we add another output at the end of the transaction to pay for the voodoo
+      unsigned_commit_tx.output.push(TxOut {
+        value: TransactionBuilder::TARGET_POSTAGE.to_sat(),
+        script_pubkey: voodoo_address.script_pubkey(),
+      });
+
+      let unsigned_commit_tx = unsigned_commit_tx;
+      let (voodo_vout, voodoo_output) = unsigned_commit_tx
+        .output
+        .iter()
+        .enumerate()
+        .find(|(_vout, output)| output.script_pubkey == voodoo_address.script_pubkey())
+        .expect("should find voodoo output");
+
+      let (commit_vout, commit_output) = unsigned_commit_tx
+        .output
+        .iter()
+        .enumerate()
+        .find(|(_vout, output)| output.script_pubkey == commit_tx_address.script_pubkey())
+        .expect("should find commit output");
+
+      // reduce commit output to cover voodoo output
+      let mut unsigned_commit_tx = unsigned_commit_tx.clone();
+      unsigned_commit_tx.output[commit_vout].value = unsigned_commit_tx.output[commit_vout]
+        .value
+        .checked_sub(voodoo_output.value)
+        .context("commit output value should be greater than voodoo output value")?;
+      //.checked_sub(fee.to_sat())
+      //.context("commit transaction output value insufficient to pay transaction fee")?;
+
+      let (commit_vout, commit_output) = unsigned_commit_tx
+        .output
+        .iter()
+        .enumerate()
+        .find(|(_vout, output)| output.script_pubkey == commit_tx_address.script_pubkey())
+        .expect("should find commit output");
+
+      //unsigned_commit_tx
+
+      let (mut reveal_tx, fee) = Self::build_nocturnal_reveal_transaction(
+        &control_block,
+        reveal_fee_rate,
+        OutPoint {
+          txid: unsigned_commit_tx.txid(),
+          vout: voodo_vout.try_into().unwrap(),
+        },
+        OutPoint {
+          txid: unsigned_commit_tx.txid(),
+          vout: commit_vout.try_into().unwrap(),
+        },
+        TxOut {
+          script_pubkey: voodoo_change_address.script_pubkey(),
+          value: voodoo_output.value,
+        },
+        TxOut {
+          script_pubkey: destination.script_pubkey(),
+          value: commit_output.value,
+        },
+        &reveal_script,
+      );
+      reveal_tx.output[0].value = 10_000;
+      reveal_tx.output[1].value = 10_000;
+
+      // endregion: --- vodoo spell
+
+      let mut sighash_cache = SighashCache::new(&mut reveal_tx);
+      let prevouts = [voodoo_output, commit_output];
+      dbg!(prevouts);
+
+      // let prevouts = [commit_output];
+      let prevouts_all = Prevouts::All(&prevouts);
+
+      let voodoo_signature_hash = sighash_cache
+        .taproot_key_spend_signature_hash(0, &prevouts_all, SchnorrSighashType::Default)
+        .expect("signature hash should compute");
+
+      let commit_signature_hash = sighash_cache
+        .taproot_script_spend_signature_hash(
+          1,
+          &prevouts_all,
+          TapLeafHash::from_script(&reveal_script, LeafVersion::TapScript),
+          SchnorrSighashType::Default,
+        )
+        .expect("signature hash should compute");
+
+      // potentail bug redo: message
+
+      let signature =
+        secp256k1.sign_schnorr(&voodoo_signature_hash.into(), &virgin_keypair.to_inner());
+
+      let witness = sighash_cache
+        .witness_mut(0)
+        .expect("getting mutable witness reference should work");
+      witness.push(signature.as_ref());
+
+      let signature = secp256k1.sign_schnorr(&commit_signature_hash.into(), &key_pair);
+
+      let witness = sighash_cache
+        .witness_mut(1)
+        .expect("getting mutable witness reference should work");
+      witness.push(signature.as_ref());
+      witness.push(reveal_script);
+      witness.push(&control_block.serialize());
+
+      (unsigned_commit_tx, reveal_tx)
+    };
 
     let recovery_key_pair = key_pair.tap_tweak(&secp256k1, taproot_spend_info.merkle_root());
 
@@ -365,8 +646,59 @@ impl Inscribe {
 
     (reveal_tx, fee)
   }
-}
 
+  fn build_nocturnal_reveal_transaction(
+    control_block: &ControlBlock,
+    fee_rate: FeeRate,
+    voodoo: OutPoint,
+    commit: OutPoint,
+    voodoo_change: TxOut,
+    genesis: TxOut,
+    script: &Script,
+  ) -> (Transaction, Amount) {
+    let reveal_tx = Transaction {
+      input: vec![
+        TxIn {
+          previous_output: voodoo,
+          script_sig: script::Builder::new().into_script(),
+          witness: Witness::new(),
+          sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+        },
+        TxIn {
+          previous_output: commit,
+          script_sig: script::Builder::new().into_script(),
+          witness: Witness::new(),
+          sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+        },
+      ],
+      output: vec![voodoo_change, genesis],
+      lock_time: PackedLockTime::ZERO,
+      version: 1,
+    };
+
+    let fee = {
+      let mut reveal_tx = reveal_tx.clone();
+
+      reveal_tx.input[0].witness.push(
+        Signature::from_slice(&[0; SCHNORR_SIGNATURE_SIZE])
+          .unwrap()
+          .as_ref(),
+      );
+
+      reveal_tx.input[1].witness.push(
+        Signature::from_slice(&[0; SCHNORR_SIGNATURE_SIZE])
+          .unwrap()
+          .as_ref(),
+      );
+      reveal_tx.input[1].witness.push(script);
+      reveal_tx.input[1].witness.push(&control_block.serialize());
+
+      fee_rate.fee(reveal_tx.vsize())
+    };
+
+    (reveal_tx, fee)
+  }
+}
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -388,6 +720,7 @@ mod tests {
       reveal_address,
       FeeRate::try_from(1.0).unwrap(),
       FeeRate::try_from(1.0).unwrap(),
+      false,
       false,
     )
     .unwrap();
@@ -419,6 +752,7 @@ mod tests {
       reveal_address,
       FeeRate::try_from(1.0).unwrap(),
       FeeRate::try_from(1.0).unwrap(),
+      false,
       false,
     )
     .unwrap();
@@ -454,6 +788,7 @@ mod tests {
       reveal_address,
       FeeRate::try_from(1.0).unwrap(),
       FeeRate::try_from(1.0).unwrap(),
+      false,
       false,
     )
     .unwrap_err()
@@ -497,6 +832,7 @@ mod tests {
       FeeRate::try_from(1.0).unwrap(),
       FeeRate::try_from(1.0).unwrap(),
       false,
+      false,
     )
     .is_ok())
   }
@@ -532,6 +868,7 @@ mod tests {
       reveal_address,
       FeeRate::try_from(fee_rate).unwrap(),
       FeeRate::try_from(fee_rate).unwrap(),
+      false,
       false,
     )
     .unwrap();
@@ -595,6 +932,7 @@ mod tests {
       FeeRate::try_from(commit_fee_rate).unwrap(),
       FeeRate::try_from(fee_rate).unwrap(),
       false,
+      false,
     )
     .unwrap();
 
@@ -644,6 +982,7 @@ mod tests {
       FeeRate::try_from(1.0).unwrap(),
       FeeRate::try_from(1.0).unwrap(),
       false,
+      false,
     )
     .unwrap_err()
     .to_string();
@@ -675,6 +1014,7 @@ mod tests {
       FeeRate::try_from(1.0).unwrap(),
       FeeRate::try_from(1.0).unwrap(),
       true,
+      false,
     )
     .unwrap();
 
