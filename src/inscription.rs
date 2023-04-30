@@ -32,6 +32,23 @@ impl Inscription {
     InscriptionParser::parse(&tx.input.get(0)?.witness).ok()
   }
 
+  // #[cfg(feature = "unstable")]
+  pub fn from_transaction_vec(tx: &Transaction) -> Vec<Option<Inscription>> {
+    let mut v = vec![];
+    let mut has_any = false;
+    for (i, input) in tx.input.iter().enumerate() {
+      let inscription = InscriptionParser::parse(&input.witness).ok();
+      if inscription.is_some() {
+        if false == has_any {
+          has_any = true;
+          v.resize_with(tx.input.len(), Default::default);
+        }
+        v[i] = inscription;
+      }
+    }
+    v
+  }
+
   pub(crate) fn from_file(chain: Chain, path: impl AsRef<Path>) -> Result<Self, Error> {
     let path = path.as_ref();
 
@@ -739,5 +756,33 @@ mod tests {
       InscriptionParser::parse(&envelope(&[b"ord", &[2], &[0]])),
       Err(InscriptionError::UnrecognizedEvenField),
     );
+  }
+
+  //#[cfg(feature = "unstable")]
+  #[test]
+  fn hidden_inscriptions_are_found() {
+    let tx = Transaction {
+      version: 0,
+      lock_time: bitcoin::locktime::PackedLockTime(0),
+      input: vec![
+        TxIn {
+          previous_output: OutPoint::null(),
+          script_sig: Script::new(),
+          sequence: Sequence(0),
+          witness: Witness::new(),
+        },
+        TxIn {
+          previous_output: OutPoint::null(),
+          script_sig: Script::new(),
+          sequence: Sequence(0),
+          witness: inscription("foo", [1; 1040]).to_witness(),
+        },
+      ],
+      output: Vec::new(),
+    };
+    let vec = Inscription::from_transaction_vec(&tx);
+    assert_eq!(vec.len(), 2);
+    assert!(vec[0].is_none());
+    assert!(vec[1].is_some());
   }
 }

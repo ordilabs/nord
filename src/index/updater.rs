@@ -46,6 +46,7 @@ impl Updater {
     let height = wtx
       .open_table(HEIGHT_TO_BLOCK_HASH)?
       .range(0..)?
+      .flatten()
       .rev()
       .next()
       .map(|(height, _hash)| height.value() + 1)
@@ -139,6 +140,7 @@ impl Updater {
         let height = wtx
           .open_table(HEIGHT_TO_BLOCK_HASH)?
           .range(0..)?
+          .flatten()
           .rev()
           .next()
           .map(|(height, _hash)| height.value() + 1)
@@ -286,7 +288,7 @@ impl Updater {
       rt.block_on(async move {
         loop {
           let Some(outpoint) = outpoint_receiver.recv().await else {
-            log::debug!("Outpoint channel closed");
+            //log::debug!("Outpoint channel closed");
             return;
           };
           // There's no try_iter on tokio::sync::mpsc::Receiver like std::sync::mpsc::Receiver.

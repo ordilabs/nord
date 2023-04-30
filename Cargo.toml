@@ -41,7 +41,7 @@ mime_guess = "2.0.4"
 miniscript = "9.0.1"
 mp4 = "0.13.0"
 ord-bitcoincore-rpc = "0.16.5"
-redb = "0.13.0"
+redb = "0.15.0"
 regex = "1.6.0"
 rss = "2.0.1"
 rust-embed = "6.4.0"
@@ -54,8 +54,17 @@ sys-info = "0.9.1"
 tempfile = "3.2.0"
 tokio = { version = "1.17.0", features = ["rt-multi-thread"] }
 tokio-stream = "0.1.9"
-tokio-util = {version = "0.7.3", features = ["compat"] }
-tower-http = { version = "0.3.3", features = ["compression-br", "compression-gzip", "cors", "set-header"] }
+tokio-util = { version = "0.7.3", features = ["compat"] }
+tower-http = { version = "0.3.3", features = [
+  "compression-br",
+  "compression-gzip",
+  "cors",
+  "set-header",
+] }
+ord-labs = { git = "https://github.com/ordilabs/ord-labs", features = [
+  "unstable",
+] }
+
 
 [dev-dependencies]
 executable-path = "1.0.0"

@@ -8,7 +8,7 @@ pub(crate) struct InscriptionHtml {
   pub(crate) inscription: Inscription,
   pub(crate) inscription_id: InscriptionId,
   pub(crate) next: Option<InscriptionId>,
-  pub(crate) number: u64,
+  pub(crate) number: i64,
   pub(crate) output: TxOut,
   pub(crate) previous: Option<InscriptionId>,
   pub(crate) sat: Option<Sat>,
@@ -18,7 +18,7 @@ pub(crate) struct InscriptionHtml {
 
 impl PageContent for InscriptionHtml {
   fn title(&self) -> String {
-    format!("Inscription {}", self.number)
+    format!("Inscription -{}", self.number)
   }
 
   fn preview_image_url(&self) -> Option<Trusted<String>> {

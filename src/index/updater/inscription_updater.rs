@@ -18,8 +18,8 @@ pub(super) struct InscriptionUpdater<'a, 'db, 'tx> {
   value_receiver: &'a mut Receiver<u64>,
   id_to_entry: &'a mut Table<'db, 'tx, &'static InscriptionIdValue, InscriptionEntryValue>,
   lost_sats: u64,
-  next_number: u64,
-  number_to_id: &'a mut Table<'db, 'tx, u64, &'static InscriptionIdValue>,
+  next_number: i64,
+  number_to_id: &'a mut Table<'db, 'tx, i64, &'static InscriptionIdValue>,
   outpoint_to_value: &'a mut Table<'db, 'tx, &'static OutPointValue, u64>,
   reward: u64,
   sat_to_inscription_id: &'a mut Table<'db, 'tx, u64, &'static InscriptionIdValue>,
@@ -35,7 +35,7 @@ impl<'a, 'db, 'tx> InscriptionUpdater<'a, 'db, 'tx> {
     value_receiver: &'a mut Receiver<u64>,
     id_to_entry: &'a mut Table<'db, 'tx, &'static InscriptionIdValue, InscriptionEntryValue>,
     lost_sats: u64,
-    number_to_id: &'a mut Table<'db, 'tx, u64, &'static InscriptionIdValue>,
+    number_to_id: &'a mut Table<'db, 'tx, i64, &'static InscriptionIdValue>,
     outpoint_to_value: &'a mut Table<'db, 'tx, &'static OutPointValue, u64>,
     sat_to_inscription_id: &'a mut Table<'db, 'tx, u64, &'static InscriptionIdValue>,
     satpoint_to_id: &'a mut Table<'db, 'tx, &'static SatPointValue, &'static InscriptionIdValue>,
@@ -44,10 +44,11 @@ impl<'a, 'db, 'tx> InscriptionUpdater<'a, 'db, 'tx> {
   ) -> Result<Self> {
     let next_number = number_to_id
       .iter()?
+      .flatten()
       .rev()
       .map(|(number, _id)| number.value() + 1)
       .next()
-      .unwrap_or(0);
+      .unwrap_or(0i64);
 
     Ok(Self {
       flotsam: Vec::new(),
@@ -108,14 +109,41 @@ impl<'a, 'db, 'tx> InscriptionUpdater<'a, 'db, 'tx> {
       }
     }
 
-    if inscriptions.iter().all(|flotsam| flotsam.offset != 0)
-      && Inscription::from_transaction(tx).is_some()
-    {
-      inscriptions.push(Flotsam {
-        inscription_id: txid.into(),
-        offset: 0,
-        origin: Origin::New(input_value - tx.output.iter().map(|txout| txout.value).sum::<u64>()),
-      });
+    let skip_daytime = false;
+
+    if inscriptions.iter().all(|flotsam| flotsam.offset != 0) {
+      let v = Inscription::from_transaction_vec(tx);
+      for (i, maybe_inscription) in v.iter().enumerate() {
+        if maybe_inscription.is_none() {
+          continue;
+        }
+        if i == 0 {
+          // TODO except for the first inscription on this chain
+          log::debug!(
+            "{}: found daytime inscription {}/{i}, skipping={skip_daytime}",
+            self.height,
+            tx.txid().to_string()[..8].to_string(),
+          );
+          if skip_daytime {
+            continue;
+          }
+        } else {
+          log::debug!(
+            "{}: found daywalker inscription {}/{i}",
+            self.height,
+            tx.txid().to_string()[..8].to_string(),
+          );
+        }
+
+        inscriptions.push(Flotsam {
+          inscription_id: InscriptionId {
+            txid: txid.clone(),
+            index: i as u32,
+          },
+          offset: 0,
+          origin: Origin::New(input_value - tx.output.iter().map(|txout| txout.value).sum::<u64>()),
+        });
+      }
     };
 
     let is_coinbase = tx
