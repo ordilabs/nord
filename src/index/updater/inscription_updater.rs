@@ -109,6 +109,8 @@ impl<'a, 'db, 'tx> InscriptionUpdater<'a, 'db, 'tx> {
       }
     }
 
+    let skip_daytime = false;
+
     if inscriptions.iter().all(|flotsam| flotsam.offset != 0) {
       let v = Inscription::from_transaction_vec(tx);
       for (i, maybe_inscription) in v.iter().enumerate() {
@@ -117,7 +119,20 @@ impl<'a, 'db, 'tx> InscriptionUpdater<'a, 'db, 'tx> {
         }
         if i == 0 {
           // TODO except for the first inscription on this chain
-          continue;
+          log::debug!(
+            "{}: found daytime inscription {}/{i}, skipping={skip_daytime}",
+            self.height,
+            tx.txid().to_string()[..8].to_string(),
+          );
+          if skip_daytime {
+            continue;
+          }
+        } else {
+          log::debug!(
+            "{}: found daywalker inscription {}/{i}",
+            self.height,
+            tx.txid().to_string()[..8].to_string(),
+          );
         }
 
         inscriptions.push(Flotsam {
